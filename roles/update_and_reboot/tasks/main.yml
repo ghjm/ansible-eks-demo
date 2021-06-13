@@ -1,0 +1,11 @@
+- name: Update all packages
+  yum: name=* state=latest
+
+- name: Check if reboot needed
+  command: needs-restarting -r
+  register: needs_restarting
+  changed_when: False
+  failed_when: "needs_restarting.rc > 1"
+
+- reboot:
+  when: "needs_restarting.rc|default(False)"

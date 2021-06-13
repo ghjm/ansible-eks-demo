@@ -1,0 +1,64 @@
+---
+- hosts: demo_clusters
+  gather_facts: false
+  tasks:
+    - include_role:
+        role: preflight
+
+    - name: Get bastion EC2 info
+      community.aws.ec2_instance_info:
+        region: "{{ aws_region }}"
+        filters:
+          "tag:Name": "{{ unique_id }}-bastion"
+          instance-state-name: [ "running" ]
+      register: bastion_ec2
+      delegate_to: localhost
+
+    - block:
+
+        - add_host:
+            name: "{{ unique_id }}-bastion"
+            ansible_ssh_host: "{{ bastion_ec2.instances[0].public_ip_address }}"
+            ansible_ssh_private_key_file: "{{ ssh_private_key_file }}"
+            ansible_user: "centos"
+            ansible_python_interpreter: "auto_silent"
+          changed_when: false
+
+        - block:
+
+            - name: Ping
+              ping:
+
+          delegate_to: "{{ unique_id }}-bastion"
+
+      when: "bastion_ec2.instances|length > 0"
+      delegate_to: localhost
+
+    - block:
+
+      - name: Remove bastion EC2
+        community.aws.ec2_instance:
+          region: "{{ aws_region }}"
+          name: "{{ unique_id }}-bastion"
+          state: absent
+
+      - name: Remove IAM role
+        community.aws.iam_role:
+          name: "{{ unique_id }}-bastion-role"
+          state: absent
+          delete_instance_profile: true
+          purge_policies: true
+
+      - name: Remove security group
+        amazon.aws.ec2_group:
+          region: "{{ aws_region }}"
+          name: "{{ unique_id }}-bastion"
+          state: absent
+ 
+      - name: Remove SSH key
+        amazon.aws.ec2_key:
+          region: "{{ aws_region }}"
+          name: "{{ unique_id }}"
+          state: absent
+
+      delegate_to: localhost

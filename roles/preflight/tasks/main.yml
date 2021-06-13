@@ -1,0 +1,7 @@
+---
+
+- name: Fail early if AWS connection is not working
+  amazon.aws.aws_caller_info:
+    region: "{{ aws_region }}"
+  delegate_to: localhost
+

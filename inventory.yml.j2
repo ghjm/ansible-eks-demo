@@ -1,0 +1,14 @@
+---
+all:
+  hosts:
+    localhost:
+      ansible_connection: local
+      ansible_python_interpreter: "{{ playbook_dir }}/venv/bin/python"
+
+demo_clusters:
+  hosts:
+    {{ unique_id }}:
+      unique_id: "{{ unique_id }}"
+      aws_region: us-east-2
+      ssh_public_key_file: "{{ playbook_dir }}/ssh_keys/id_rsa.pub"
+      ssh_private_key_file: "{{ playbook_dir }}/ssh_keys/id_rsa"

@@ -1,0 +1,143 @@
+---
+- hosts: demo_clusters
+  gather_facts: false
+  tasks:
+    - include_role:
+        role: preflight
+
+    - block:
+
+      - name: Create SSH key
+        amazon.aws.ec2_key:
+          region: "{{ aws_region }}"
+          name: "{{ unique_id }}"
+          key_material: "{{ lookup('file', ssh_public_key_file) }}"
+          state: present
+
+      - name: Create security group
+        amazon.aws.ec2_group:
+          region: "{{ aws_region }}"
+          name: "{{ unique_id }}-bastion"
+          description: "{{ unique_id }} bastion security group"
+          purge_rules: true
+          purge_rules_egress: true
+          rules:
+            - proto: tcp
+              ports:
+                - 22
+              cidr_ip: "0.0.0.0/0"
+              rule_desc: "Allow SSH from everywhere"
+
+      - name: Create IAM role
+        community.aws.iam_role:
+          name: "{{ unique_id }}-bastion-role"
+          assume_role_policy_document: |
+              {
+                  "Version": "2012-10-17",
+                  "Statement": [
+                      {
+                          "Effect": "Allow",
+                          "Principal": {
+                              "Service": [
+                                  "ec2.amazonaws.com"
+                              ]
+                          },
+                          "Action": [
+                              "sts:AssumeRole"
+                          ]
+                      }
+                  ]
+              }
+          managed_policies:
+            - arn:aws:iam::aws:policy/PowerUserAccess
+          create_instance_profile: true
+          purge_policies: true
+
+      - name: Create bastion EC2
+        community.aws.ec2_instance:
+          region: "{{ aws_region }}"
+          name: "{{ unique_id }}-bastion"
+          instance_type: "t3.micro"
+          image_id: "ami-0d97ef13c06b05a19"
+          key_name: "{{ unique_id }}"
+          security_group: "{{ unique_id }}-bastion"
+          instance_role: "{{ unique_id }}-bastion-role"
+          network:
+            assign_public_ip: true
+          wait: yes
+        register: bastion_ec2
+
+      - name: Add bastion EC2 as inventory host
+        add_host:
+          name: "{{ unique_id }}-bastion"
+          ansible_ssh_host: "{{ bastion_ec2.instances[0].public_ip_address }}"
+          ansible_ssh_private_key_file: "{{ ssh_private_key_file }}"
+          ansible_user: "centos"
+          ansible_python_interpreter: "auto_silent"
+        changed_when: false
+
+      - name: Show bastion EC2 IP address
+        debug:
+          msg: "Bastion EC2 public IP address: {{ bastion_ec2.instances[0].public_ip_address }}"
+
+      delegate_to: localhost
+
+    - block:
+
+      - name: Ping
+        ping:
+
+      - block:
+
+        - name: Remove default packages we don't want
+          dnf:
+            name: "{{ item }}"
+            state: absent
+          loop:
+            - cockpit-ws
+
+        - name: Update and reboot if needed
+          include_role:
+            role: update_and_reboot
+ 
+        - name: Add EPEL repo
+          dnf:
+            name: "epel-release"
+            state: latest
+
+        - name: Install additional packages
+          dnf:
+            name: "{{ item }}"
+            state: latest
+          loop:
+            - python3-boto3
+            - unzip
+
+        - name: Download aws-cli v2
+          get_url:
+            url: "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip"
+            dest: "/tmp/awscli-exe-linux-x86_64.zip"
+
+        - name: Unzip aws-cli
+          unarchive:
+            src: "/tmp/awscli-exe-linux-x86_64.zip"
+            dest: "/tmp"
+            remote_src: yes
+
+        - name: Install aws-cli
+          shell:
+            cmd: "/tmp/aws/install"
+            creates: "/usr/local/bin/aws"
+
+        become: true
+
+      - name: Get bastion EC2 info
+        community.aws.ec2_instance_info:
+          region: "{{ aws_region }}"
+          filters:
+            "tag:Name": "{{ unique_id }}-bastion"
+            instance-state-name: [ "running" ]
+        register: bastion_ec2_test
+
+      delegate_to: "{{ unique_id }}-bastion"
+
