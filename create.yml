@@ -7,14 +7,14 @@
 
     - block:
 
-      - name: Create SSH key
+      - name: Create SSH key for bastion EC2
         amazon.aws.ec2_key:
           region: "{{ aws_region }}"
           name: "{{ unique_id }}"
           key_material: "{{ lookup('file', ssh_public_key_file) }}"
           state: present
 
-      - name: Create security group
+      - name: Create security group for bastion EC2
         amazon.aws.ec2_group:
           region: "{{ aws_region }}"
           name: "{{ unique_id }}-bastion"
@@ -28,28 +28,29 @@
               cidr_ip: "0.0.0.0/0"
               rule_desc: "Allow SSH from everywhere"
 
-      - name: Create IAM role
+      - name: Create IAM role for bastion EC2
         community.aws.iam_role:
+          region: "{{ aws_region }}"
           name: "{{ unique_id }}-bastion-role"
           assume_role_policy_document: |
-              {
-                  "Version": "2012-10-17",
-                  "Statement": [
-                      {
-                          "Effect": "Allow",
-                          "Principal": {
-                              "Service": [
-                                  "ec2.amazonaws.com"
-                              ]
-                          },
-                          "Action": [
-                              "sts:AssumeRole"
-                          ]
-                      }
+            {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Principal": {
+                    "Service": [
+                      "ec2.amazonaws.com"
+                    ]
+                  },
+                  "Action": [
+                    "sts:AssumeRole"
                   ]
-              }
+                }
+              ]
+            }
           managed_policies:
-            - arn:aws:iam::aws:policy/PowerUserAccess
+            - arn:aws:iam::aws:policy/AdministratorAccess
           create_instance_profile: true
           purge_policies: true
 
@@ -83,9 +84,6 @@
       delegate_to: localhost
 
     - block:
-
-      - name: Ping
-        ping:
 
       - block:
 
@@ -131,13 +129,59 @@
 
         become: true
 
-      - name: Get bastion EC2 info
-        community.aws.ec2_instance_info:
+      - name: Create IAM role for EKS cluster
+        community.aws.iam_role:
           region: "{{ aws_region }}"
-          filters:
-            "tag:Name": "{{ unique_id }}-bastion"
-            instance-state-name: [ "running" ]
-        register: bastion_ec2_test
+          name: "{{ unique_id }}-eks-cluster-service-role"
+          assume_role_policy_document: |
+            {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Principal": {
+                    "Service": "eks.amazonaws.com"
+                  },
+                  "Action": "sts:AssumeRole"
+                }
+              ]
+            }
+          managed_policies:
+            - arn:aws:iam::aws:policy/AmazonEKSClusterPolicy
+          purge_policies: true
+        register: eks_role
+
+      - name: Create security group for EKS cluster
+        amazon.aws.ec2_group:
+          region: "{{ aws_region }}"
+          name: "{{ unique_id }}-cluster"
+          description: "{{ unique_id }} EKS cluster security group"
+          purge_rules: true
+          purge_rules_egress: true
+
+      - name: Get subnet information from the AWS VPC
+        amazon.aws.ec2_vpc_subnet_info:
+          region: "{{ aws_region }}"
+        register: vpc_subnet_info
+
+      - name: Extract just the subnet IDs
+        set_fact:
+          subnet_list: "{{ vpc_subnet_info.subnets | map(attribute='id') | list }}"
+
+      - name: Create an EKS cluster
+        community.aws.aws_eks_cluster:
+          region: "{{ aws_region }}"
+          name: "{{ unique_id }}-cluster"
+          version: 1.19
+          role_arn: "{{ eks_role.iam_role.arn }}"
+          security_groups:
+            - "{{ unique_id }}-cluster"
+          subnets: "{{ subnet_list }}"
+          wait: yes
+        register: eks_info
+
+      - debug:
+          msg: "{{ eks_info }}"
 
       delegate_to: "{{ unique_id }}-bastion"
 

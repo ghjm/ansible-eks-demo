@@ -36,14 +36,39 @@
 
     - block:
 
+      - name: Remove EKS cluster
+        community.aws.aws_eks_cluster:
+          region: "{{ aws_region }}"
+          name: "{{ unique_id }}-cluster"
+          state: absent
+          wait: yes
+
+      - name: Remove security group for EKS cluster
+        amazon.aws.ec2_group:
+          region: "{{ aws_region }}"
+          name: "{{ unique_id }}-cluster"
+          purge_rules: true
+          purge_rules_egress: true
+          state: absent
+
+      - name: Remove IAM role for EKS cluster
+        community.aws.iam_role:
+          region: "{{ aws_region }}"
+          name: "{{ unique_id }}-eks-cluster-service-role"
+          state: absent
+          delete_instance_profile: true
+          purge_policies: true
+
       - name: Remove bastion EC2
         community.aws.ec2_instance:
           region: "{{ aws_region }}"
           name: "{{ unique_id }}-bastion"
           state: absent
+          wait: yes
 
       - name: Remove IAM role
         community.aws.iam_role:
+          region: "{{ aws_region }}"
           name: "{{ unique_id }}-bastion-role"
           state: absent
           delete_instance_profile: true
