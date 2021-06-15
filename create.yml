@@ -96,18 +96,15 @@
             state: absent
           loop:
             - cockpit-ws
-          tags: bastion_ec2
 
         - name: Update and reboot if needed
           include_role:
             role: update_and_reboot
-          tags: bastion_ec2
  
         - name: Add EPEL repo
           dnf:
             name: "epel-release"
             state: latest
-          tags: bastion_ec2
 
         - name: Install additional packages
           dnf:
@@ -116,28 +113,44 @@
           loop:
             - python3-boto3
             - unzip
-          tags: bastion_ec2
 
         - name: Download aws-cli v2
           get_url:
             url: "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip"
             dest: "/tmp/awscli-exe-linux-x86_64.zip"
-          tags: bastion_ec2
 
         - name: Unzip aws-cli
           unarchive:
             src: "/tmp/awscli-exe-linux-x86_64.zip"
             dest: "/tmp"
             remote_src: yes
-          tags: bastion_ec2
 
         - name: Install aws-cli
           shell:
             cmd: "/tmp/aws/install"
             creates: "/usr/local/bin/aws"
-          tags: bastion_ec2
 
+        - name: Add Google Kubernetes repo
+          copy:
+            dest: "/etc/yum.repos.d/kubernetes.repo"
+            content: |
+              [kubernetes]
+              name=Kubernetes
+              baseurl=https://packages.cloud.google.com/yum/repos/kubernetes-el7-x86_64
+              enabled=1
+              gpgcheck=1
+              repo_gpgcheck=1
+              gpgkey=https://packages.cloud.google.com/yum/doc/yum-key.gpg https://packages.cloud.google.com/yum/doc/rpm-package-key.gpg
+
+        - name: Install kubectl
+          dnf:
+            name: kubectl
+            state: latest
+
+        tags: bastion_ec2
         become: true
+
+      - meta: end_play
 
       - name: Create IAM role for EKS cluster
         community.aws.iam_role:
