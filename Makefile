@@ -27,7 +27,7 @@ ssh_keys/id_rsa:
 	@ssh-keygen -f ssh_keys/id_rsa -N "" -C ""
 
 create: venv/bin/activate inventory.yml ssh_keys/id_rsa
-	@venv/bin/ansible-playbook -i inventory.yml create.yml
+	@venv/bin/ansible-playbook -i inventory.yml --skip-tags "$$SKIP_TAGS" create.yml
 
 destroy: venv/bin/activate inventory.yml
 	@venv/bin/ansible-playbook -i inventory.yml destroy.yml
