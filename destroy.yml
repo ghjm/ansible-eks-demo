@@ -49,108 +49,109 @@
             "tag:Name": "{{ unique_id }}-vpc"
         register: eks_vpc
 
-      - assert:
-          that: "(eks_vpc.vpcs | length) == 1"
-
-      - name: Get EKS cluster list
-        shell: "aws eks list-clusters"
-        register: eks_clusters
-        changed_when: false
-
       - block:
 
-        - name: Get existing Fargate profiles
-          shell: "aws eks list-fargate-profiles --cluster-name {{ unique_id }}-cluster"
-          register: fargate_profiles
+        - name: Get EKS cluster list
+          shell: "aws eks list-clusters"
+          register: eks_clusters
           changed_when: false
-
+  
         - block:
-
-          - name: Delete Fargate profile
-            shell: "aws eks delete-fargate-profile --cluster-name {{ unique_id }}-cluster --fargate-profile-name {{ unique_id }}-fargate"
-
-          - name: Wait for Fargate profile to be gone
+  
+          - name: Get existing Fargate profiles
             shell: "aws eks list-fargate-profiles --cluster-name {{ unique_id }}-cluster"
-            register: fargate_profile_status
+            register: fargate_profiles
             changed_when: false
-            until: "fargate_profile_status.rc == 0 and unique_id+'-fargate' not in dict(fargate_profile_status.stdout | from_json).fargateProfileNames"
-            retries: 30
-            delay: 10
+  
+          - block:
+  
+            - name: Delete Fargate profile
+              shell: "aws eks delete-fargate-profile --cluster-name {{ unique_id }}-cluster --fargate-profile-name {{ unique_id }}-fargate"
+  
+            - name: Wait for Fargate profile to be gone
+              shell: "aws eks list-fargate-profiles --cluster-name {{ unique_id }}-cluster"
+              register: fargate_profile_status
+              changed_when: false
+              until: "fargate_profile_status.rc == 0 and unique_id+'-fargate' not in dict(fargate_profile_status.stdout | from_json).fargateProfileNames"
+              retries: 30
+              delay: 10
+  
+            when: "unique_id+'-fargate' in (dict(fargate_profiles.stdout | from_json).fargateProfileNames | list)"
+  
+          - name: Remove EKS cluster
+            community.aws.aws_eks_cluster:
+              region: "{{ aws_region }}"
+              name: "{{ unique_id }}-cluster"
+              state: absent
+              wait: yes
+  
+          when: "unique_id+'-cluster' in (dict(eks_clusters.stdout | from_json).clusters | list)"
 
-          when: "unique_id+'-fargate' in (dict(fargate_profiles.stdout | from_json).fargateProfileNames | list)"
-
-        - name: Remove EKS cluster
-          community.aws.aws_eks_cluster:
+        - name: Remove security group for EKS cluster
+          amazon.aws.ec2_group:
             region: "{{ aws_region }}"
+            vpc_id: "{{ eks_vpc.vpcs[0].id }}"
             name: "{{ unique_id }}-cluster"
+            purge_rules: true
+            purge_rules_egress: true
             state: absent
-            wait: yes
+  
+        - name: Remove IAM role for EKS cluster
+          community.aws.iam_role:
+            region: "{{ aws_region }}"
+            name: "{{ unique_id }}-eks-cluster-service-role"
+            state: absent
+            delete_instance_profile: true
+            purge_policies: true
+  
+        - name: Remove IAM role for Fargate
+          community.aws.iam_role:
+            region: "{{ aws_region }}"
+            name: "{{ unique_id }}-eks-fargate-role"
+            state: absent
+            delete_instance_profile: true
+            purge_policies: true
+  
+        - name: Remove EKS VPC route table
+          community.aws.ec2_vpc_route_table:
+            region: "{{ aws_region }}"
+            vpc_id: "{{ eks_vpc.vpcs[0].id }}"
+            tags:
+              Name: "{{ unique_id }}-igw-route"
+            state: absent
+  
+        - name: Remove IGW
+          community.aws.ec2_vpc_igw:
+            region: "{{ aws_region }}"
+            vpc_id: "{{ eks_vpc.vpcs[0].id }}"
+            state: absent
+  
+        - name: Remove EKS private subnets
+          amazon.aws.ec2_vpc_subnet:
+            region: "{{ aws_region }}"
+            vpc_id: "{{ eks_vpc.vpcs[0].id }}"
+            az: "{{ item.az }}"
+            cidr: "{{ item.cidr }}"
+            state: absent
+          loop: "{{ aws_vpc_private_subnets }}"
+  
+        - name: Remove EKS public subnets
+          amazon.aws.ec2_vpc_subnet:
+            region: "{{ aws_region }}"
+            vpc_id: "{{ eks_vpc.vpcs[0].id }}"
+            az: "{{ item.az }}"
+            cidr: "{{ item.cidr }}"
+            state: absent
+          loop: "{{ aws_vpc_public_subnets }}"
+  
+        - name: Remove EKS cluster VPC
+          amazon.aws.ec2_vpc_net:
+            region: "{{ aws_region }}"
+            name: "{{ unique_id }}-vpc"
+            cidr_block: "{{ aws_vpc_cidr }}"
+            state: absent
 
-        when: "unique_id+'-cluster' in (dict(eks_clusters.stdout | from_json).clusters | list)"
-
-      - name: Remove security group for EKS cluster
-        amazon.aws.ec2_group:
-          region: "{{ aws_region }}"
-          vpc_id: "{{ eks_vpc.vpcs[0].id }}"
-          name: "{{ unique_id }}-cluster"
-          purge_rules: true
-          purge_rules_egress: true
-          state: absent
-
-      - name: Remove IAM role for EKS cluster
-        community.aws.iam_role:
-          region: "{{ aws_region }}"
-          name: "{{ unique_id }}-eks-cluster-service-role"
-          state: absent
-          delete_instance_profile: true
-          purge_policies: true
-
-      - name: Remove IAM role for Fargate
-        community.aws.iam_role:
-          region: "{{ aws_region }}"
-          name: "{{ unique_id }}-eks-fargate-role"
-          state: absent
-          delete_instance_profile: true
-          purge_policies: true
-
-      - name: Remove EKS VPC route table
-        community.aws.ec2_vpc_route_table:
-          region: "{{ aws_region }}"
-          vpc_id: "{{ eks_vpc.vpcs[0].id }}"
-          tags:
-            Name: "{{ unique_id }}-igw-route"
-          state: absent
-
-      - name: Remove IGW
-        community.aws.ec2_vpc_igw:
-          region: "{{ aws_region }}"
-          vpc_id: "{{ eks_vpc.vpcs[0].id }}"
-          state: absent
-
-      - name: Remove EKS private subnets
-        amazon.aws.ec2_vpc_subnet:
-          region: "{{ aws_region }}"
-          vpc_id: "{{ eks_vpc.vpcs[0].id }}"
-          az: "{{ item.az }}"
-          cidr: "{{ item.cidr }}"
-          state: absent
-        loop: "{{ aws_vpc_private_subnets }}"
-
-      - name: Remove EKS public subnets
-        amazon.aws.ec2_vpc_subnet:
-          region: "{{ aws_region }}"
-          vpc_id: "{{ eks_vpc.vpcs[0].id }}"
-          az: "{{ item.az }}"
-          cidr: "{{ item.cidr }}"
-          state: absent
-        loop: "{{ aws_vpc_public_subnets }}"
-
-      - name: Remove EKS cluster VPC
-        amazon.aws.ec2_vpc_net:
-          region: "{{ aws_region }}"
-          name: "{{ unique_id }}-vpc"
-          cidr_block: "{{ aws_vpc_cidr }}"
-          state: absent
+        when: "(eks_vpc.vpcs | length) > 0"
 
       delegate_to: "{{ unique_id }}-bastion"
 
