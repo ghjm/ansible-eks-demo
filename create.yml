@@ -13,6 +13,7 @@
           name: "{{ unique_id }}"
           key_material: "{{ lookup('file', ssh_public_key_file) }}"
           state: present
+        tags: bastion_ec2
 
       - name: Create security group for bastion EC2
         amazon.aws.ec2_group:
@@ -27,6 +28,7 @@
                 - 22
               cidr_ip: "0.0.0.0/0"
               rule_desc: "Allow SSH from everywhere"
+        tags: bastion_ec2
 
       - name: Create IAM role for bastion EC2
         community.aws.iam_role:
@@ -53,6 +55,7 @@
             - arn:aws:iam::aws:policy/AdministratorAccess
           create_instance_profile: true
           purge_policies: true
+        tags: bastion_ec2
 
       - name: Create bastion EC2
         community.aws.ec2_instance:
@@ -93,15 +96,18 @@
             state: absent
           loop:
             - cockpit-ws
+          tags: bastion_ec2
 
         - name: Update and reboot if needed
           include_role:
             role: update_and_reboot
+          tags: bastion_ec2
  
         - name: Add EPEL repo
           dnf:
             name: "epel-release"
             state: latest
+          tags: bastion_ec2
 
         - name: Install additional packages
           dnf:
@@ -110,22 +116,26 @@
           loop:
             - python3-boto3
             - unzip
+          tags: bastion_ec2
 
         - name: Download aws-cli v2
           get_url:
             url: "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip"
             dest: "/tmp/awscli-exe-linux-x86_64.zip"
+          tags: bastion_ec2
 
         - name: Unzip aws-cli
           unarchive:
             src: "/tmp/awscli-exe-linux-x86_64.zip"
             dest: "/tmp"
             remote_src: yes
+          tags: bastion_ec2
 
         - name: Install aws-cli
           shell:
             cmd: "/tmp/aws/install"
             creates: "/usr/local/bin/aws"
+          tags: bastion_ec2
 
         become: true
 
@@ -159,14 +169,72 @@
           purge_rules: true
           purge_rules_egress: true
 
-      - name: Get subnet information from the AWS VPC
-        amazon.aws.ec2_vpc_subnet_info:
+      - name: Create VPC for EKS cluster
+        amazon.aws.ec2_vpc_net:
           region: "{{ aws_region }}"
-        register: vpc_subnet_info
+          name: "{{ unique_id }}-vpc"
+          cidr_block: "{{ aws_vpc_cidr }}"
+          state: present
+        register: eks_vpc
 
-      - name: Extract just the subnet IDs
+      - name: Create private subnets for EKS cluster
+        amazon.aws.ec2_vpc_subnet:
+          region: "{{ aws_region }}"
+          vpc_id: "{{ eks_vpc.vpc.id }}"
+          az: "{{ item.az }}"
+          cidr: "{{ item.cidr }}"
+          resource_tags:
+            Name: "{{ unique_id }}-private-subnet-{{ item.az }}"
+        register: eks_private_subnets
+        loop: "{{ aws_vpc_private_subnets }}"
+
+      - name: Get list of private subnets
         set_fact:
-          subnet_list: "{{ vpc_subnet_info.subnets | map(attribute='id') | list }}"
+          eks_private_subnets_list: "{{ eks_private_subnets.results | map(attribute='subnet.id') | list }}"
+
+      - name: Create public subnets for EKS cluster
+        amazon.aws.ec2_vpc_subnet:
+          region: "{{ aws_region }}"
+          vpc_id: "{{ eks_vpc.vpc.id }}"
+          az: "{{ item.az }}"
+          cidr: "{{ item.cidr }}"
+          resource_tags:
+            Name: "{{ unique_id }}-public-subnet-{{ item.az }}"
+        register: eks_public_subnets
+        loop: "{{ aws_vpc_public_subnets }}"
+
+      - name: Get list of public subnets
+        set_fact:
+          eks_public_subnets_list: "{{ eks_public_subnets.results | map(attribute='subnet.id') | list }}"
+
+      - name: Create IGW for public subnets
+        community.aws.ec2_vpc_igw:
+          region: "{{ aws_region }}"
+          vpc_id: "{{ eks_vpc.vpc.id }}"
+          state: present
+          tags:
+            Name: "{{ unique_id }}-igw"
+        register: eks_igw
+
+      - name: Create route table to route public subnets via IGW
+        community.aws.ec2_vpc_route_table:
+          region: "{{ aws_region }}"
+          vpc_id: "{{ eks_vpc.vpc.id }}"
+          subnets: "{{ eks_public_subnets_list }}"
+          routes:
+            - dest: "0.0.0.0/0"
+              gateway_id: "{{ eks_igw.gateway_id }}"
+          tags:
+            Name: "{{ unique_id }}-igw-route"
+
+      - name: Create security group for EKS cluster
+        amazon.aws.ec2_group:
+          region: "{{ aws_region }}"
+          vpc_id: "{{ eks_vpc.vpc.id }}"
+          name: "{{ unique_id }}-cluster"
+          description: "{{ unique_id }} EKS cluster security group"
+          purge_rules: true
+          purge_rules_egress: true
 
       - name: Create an EKS cluster
         community.aws.aws_eks_cluster:
@@ -176,12 +244,51 @@
           role_arn: "{{ eks_role.iam_role.arn }}"
           security_groups:
             - "{{ unique_id }}-cluster"
-          subnets: "{{ subnet_list }}"
+          subnets: "{{ eks_private_subnets_list }}"
           wait: yes
-        register: eks_info
+        register: eks_results
 
-      - debug:
-          msg: "{{ eks_info }}"
+      - name: Create IAM role for Fargate
+        community.aws.iam_role:
+          region: "{{ aws_region }}"
+          name: "{{ unique_id }}-eks-fargate-role"
+          assume_role_policy_document: |
+            {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Principal": {
+                    "Service": "eks-fargate-pods.amazonaws.com"
+                  },
+                  "Action": "sts:AssumeRole"
+                }
+              ]
+            }
+          managed_policies:
+            - arn:aws:iam::aws:policy/AmazonEKSFargatePodExecutionRolePolicy
+          purge_policies: true
+        register: fargate_role
+
+      - name: Get existing Fargate profiles
+        shell: "aws eks list-fargate-profiles --cluster-name {{ unique_id }}-cluster"
+        register: fargate_profiles
+        changed_when: false
+
+      - block:
+
+        - name: Create Fargate profile
+          shell: "aws eks create-fargate-profile --cluster-name {{ unique_id }}-cluster --fargate-profile-name {{ unique_id }}-fargate --subnets {{ eks_private_subnets_list | join(' ') }} --selectors namespace=default --pod-execution-role-arn {{ fargate_role.iam_role.arn }}"
+
+        - name: Wait for Fargate profile to be created
+          shell: "aws eks describe-fargate-profile --cluster-name {{ unique_id }}-cluster --fargate-profile-name {{ unique_id }}-fargate"
+          register: fargate_profile_status
+          changed_when: false
+          until: "fargate_profile_status.rc == 0 and dict(fargate_profile_status.stdout | from_json).fargateProfile.status == 'ACTIVE'"
+          retries: 30
+          delay: 10
+
+          when: "unique_id+'-fargate' not in (dict(fargate_profiles.stdout | from_json).fargateProfileNames | list)"
 
       delegate_to: "{{ unique_id }}-bastion"
 

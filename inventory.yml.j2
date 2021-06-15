@@ -12,3 +12,22 @@ demo_clusters:
       aws_region: us-east-2
       ssh_public_key_file: "{{ playbook_dir }}/ssh_keys/id_rsa.pub"
       ssh_private_key_file: "{{ playbook_dir }}/ssh_keys/id_rsa"
+
+      aws_vpc_cidr: "10.27.0.0/20"
+
+      aws_vpc_private_subnets:
+        - az: "us-east-2a"
+          cidr: "10.27.0.0/24"
+        - az: "us-east-2b"
+          cidr: "10.27.1.0/24"
+        - az: "us-east-2c"
+          cidr: "10.27.2.0/24"
+
+      aws_vpc_public_subnets:
+        - az: "us-east-2a"
+          cidr: "10.27.8.0/24"
+        - az: "us-east-2b"
+          cidr: "10.27.9.0/24"
+        - az: "us-east-2c"
+          cidr: "10.27.10.0/24"
+
