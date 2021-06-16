@@ -151,6 +151,8 @@
   
         - name: Create Fargate profile
           shell: "aws eks create-fargate-profile --cluster-name {{ unique_id }}-cluster --fargate-profile-name {{ unique_id }}-fargate --subnets {{ eks_private_subnets_list | join(' ') }} --selectors namespace=default namespace=kube-system namespace=testing --pod-execution-role-arn {{ fargate_role.iam_role.arn }}"
+          retries: 3
+          delay: 2
   
         - name: Wait for Fargate profile to be created
           shell: "aws eks describe-fargate-profile --cluster-name {{ unique_id }}-cluster --fargate-profile-name {{ unique_id }}-fargate"
