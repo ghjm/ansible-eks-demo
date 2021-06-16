@@ -5,41 +5,6 @@
     - include_role:
         role: preflight
 
-    - name: Get bastion EC2 info
-      community.aws.ec2_instance_info:
-        region: "{{ aws_region }}"
-        filters:
-          "tag:Name": "{{ unique_id }}-bastion"
-          instance-state-name: [ "running" ]
-      register: bastion_ec2
-      delegate_to: localhost
-
-    - block:
-      - debug:
-          msg: "Bastion host does not exist - not checking cluster"
-      - meta: end_play
-      when: "(bastion_ec2.instances | length) == 0"
-
-    - block:
-
-      - add_host:
-          name: "{{ unique_id }}-bastion"
-          ansible_ssh_host: "{{ bastion_ec2.instances[0].public_ip_address }}"
-          ansible_ssh_private_key_file: "{{ ssh_private_key_file }}"
-          ansible_user: "centos"
-          ansible_python_interpreter: "auto_silent"
-        changed_when: false
-
-      - block:
-
-          - name: Ping
-            ping:
-
-        delegate_to: "{{ unique_id }}-bastion"
-
-      when: "bastion_ec2.instances|length > 0"
-      delegate_to: localhost
-
     - block:
 
       - name: Get EKS cluster VPC info
@@ -49,7 +14,16 @@
             "tag:Name": "{{ unique_id }}-vpc"
         register: eks_vpc
 
+      - name: Make sure there was at most one VPC found
+        assert:
+          that: "eks_vpc.vpcs | length <= 1"
+          fail_msg: "Multiple matching VPCs found.  Manual intervention needed."
+
       - block:
+
+        - name: Extract VPC ID to fact
+          set_fact:
+            eks_vpc_id: "{{ eks_vpc.vpcs[0].id }}"
 
         - name: Get EKS cluster list
           shell: "aws eks list-clusters"
@@ -90,7 +64,7 @@
         - name: Remove security group for EKS cluster
           amazon.aws.ec2_group:
             region: "{{ aws_region }}"
-            vpc_id: "{{ eks_vpc.vpcs[0].id }}"
+            vpc_id: "{{ eks_vpc_id }}"
             name: "{{ unique_id }}-cluster"
             purge_rules: true
             purge_rules_egress: true
@@ -115,7 +89,7 @@
         - name: Remove EKS VPC route table
           community.aws.ec2_vpc_route_table:
             region: "{{ aws_region }}"
-            vpc_id: "{{ eks_vpc.vpcs[0].id }}"
+            vpc_id: "{{ eks_vpc_id }}"
             tags:
               Name: "{{ unique_id }}-igw-route"
             state: absent
@@ -123,13 +97,13 @@
         - name: Remove IGW
           community.aws.ec2_vpc_igw:
             region: "{{ aws_region }}"
-            vpc_id: "{{ eks_vpc.vpcs[0].id }}"
+            vpc_id: "{{ eks_vpc_id }}"
             state: absent
   
         - name: Remove EKS private subnets
           amazon.aws.ec2_vpc_subnet:
             region: "{{ aws_region }}"
-            vpc_id: "{{ eks_vpc.vpcs[0].id }}"
+            vpc_id: "{{ eks_vpc_id }}"
             az: "{{ item.az }}"
             cidr: "{{ item.cidr }}"
             state: absent
@@ -138,7 +112,7 @@
         - name: Remove EKS public subnets
           amazon.aws.ec2_vpc_subnet:
             region: "{{ aws_region }}"
-            vpc_id: "{{ eks_vpc.vpcs[0].id }}"
+            vpc_id: "{{ eks_vpc_id }}"
             az: "{{ item.az }}"
             cidr: "{{ item.cidr }}"
             state: absent
@@ -152,36 +126,5 @@
             state: absent
 
         when: "(eks_vpc.vpcs | length) > 0"
-
-      delegate_to: "{{ unique_id }}-bastion"
-
-    - block:
-
-      - name: Remove bastion EC2
-        community.aws.ec2_instance:
-          region: "{{ aws_region }}"
-          name: "{{ unique_id }}-bastion"
-          state: absent
-          wait: yes
-
-      - name: Remove bastion IAM role
-        community.aws.iam_role:
-          region: "{{ aws_region }}"
-          name: "{{ unique_id }}-bastion-role"
-          state: absent
-          delete_instance_profile: true
-          purge_policies: true
-
-      - name: Remove bastion security group
-        amazon.aws.ec2_group:
-          region: "{{ aws_region }}"
-          name: "{{ unique_id }}-bastion"
-          state: absent
- 
-      - name: Remove SSH key
-        amazon.aws.ec2_key:
-          region: "{{ aws_region }}"
-          name: "{{ unique_id }}"
-          state: absent
 
       delegate_to: localhost

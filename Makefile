@@ -12,7 +12,7 @@ venv: venv/bin/activate
 venv/bin/activate:
 	@python3 -m venv venv
 	@venv/bin/pip install -U pip wheel
-	@venv/bin/pip install -U ansible boto boto3
+	@venv/bin/pip install -U ansible boto boto3 openshift
 
 clean-venv:
 	@rm -rf venv
@@ -27,7 +27,7 @@ ssh_keys/id_rsa:
 	@ssh-keygen -f ssh_keys/id_rsa -N "" -C ""
 
 create: venv/bin/activate inventory.yml ssh_keys/id_rsa
-	@venv/bin/ansible-playbook -i inventory.yml --skip-tags "$$SKIP_TAGS" create.yml
+	@venv/bin/ansible-playbook -i inventory.yml create.yml
 
 destroy: venv/bin/activate inventory.yml
 	@venv/bin/ansible-playbook -i inventory.yml destroy.yml
